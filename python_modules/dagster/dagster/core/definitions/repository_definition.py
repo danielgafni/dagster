@@ -25,6 +25,7 @@ from .events import AssetKey
 from .executor_definition import ExecutorDefinition
 from .graph_definition import GraphDefinition, SubselectedGraphDefinition
 from .job_definition import JobDefinition
+from .logger_definition import LoggerDefinition
 from .partition import PartitionScheduleDefinition, PartitionSetDefinition
 from .pipeline_definition import PipelineDefinition
 from .schedule_definition import ScheduleDefinition
@@ -633,6 +634,7 @@ class CachingRepositoryData(RepositoryData):
             ]
         ],
         default_executor_def: Optional[ExecutorDefinition] = None,
+        default_logger_defs: Optional[Mapping[str, LoggerDefinition]] = None,
     ) -> "CachingRepositoryData":
         """Static constructor.
 
@@ -793,6 +795,11 @@ class CachingRepositoryData(RepositoryData):
             for name, job_def in jobs.items():
                 if not job_def._executor_def_specified:
                     jobs[name] = job_def.with_executor_def(default_executor_def)
+
+        if default_logger_defs:
+            for name, job_def in jobs.items():
+                if not job_def._logger_defs_specified:
+                    jobs[name] = job_def.with_logger_defs(default_logger_defs)
 
         return CachingRepositoryData(
             pipelines=pipelines,
