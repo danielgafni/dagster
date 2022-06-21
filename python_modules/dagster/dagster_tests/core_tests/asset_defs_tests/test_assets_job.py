@@ -1635,6 +1635,23 @@ def test_resolve_dependency_in_group():
     assert the_job.execute_in_process().success
 
 
+def test_resolve_dependency_fail_across_groups():
+    @asset(key_prefix="abc", group_name="other")
+    def asset1():
+        ...
+
+    @asset
+    def asset2(context, asset1):
+        del asset1
+        assert context.asset_key_for_input("asset1") == AssetKey(["abc", "asset1"])
+
+    with pytest.raises(
+        DagsterInvalidDefinitionError,
+        match="resource with key 'foo' required by resource with key 'my_source_asset__io_manager' was not provided.",
+    ):
+        build_assets_job(name="test", assets=[asset1, asset2])
+
+
 def test_resolve_dependency_multi_asset_different_groups():
     @asset(key_prefix="abc")
     def asset1():
