@@ -1,7 +1,17 @@
-import {Box, Button, ButtonGroup, Checkbox, Colors, Icon} from '@dagster-io/ui';
+import {
+  Box,
+  Button,
+  ButtonGroup,
+  Checkbox,
+  Colors,
+  Icon,
+  JoinedButtons,
+  TextInput,
+} from '@dagster-io/ui';
 import * as React from 'react';
 
 import {GraphData, LiveData} from '../asset-graph/Utils';
+import {AssetGraphQueryItem, calculateGraphDistances} from '../asset-graph/useAssetGraphData';
 
 import {AssetLineageScope, AssetNodeLineageGraph} from './AssetNodeLineageGraph';
 import {AssetViewParams} from './AssetView';
@@ -14,7 +24,28 @@ export const AssetNodeLineage: React.FC<{
   assetNode: AssetNodeDefinitionFragment;
   assetGraphData: GraphData;
   liveDataByNode: LiveData;
-}> = ({params, setParams, assetNode, liveDataByNode, assetGraphData}) => {
+  requestedDepth: number;
+  graphQueryItems: AssetGraphQueryItem[];
+}> = ({
+  params,
+  setParams,
+  assetNode,
+  liveDataByNode,
+  assetGraphData,
+  graphQueryItems,
+  requestedDepth,
+}) => {
+  const maxDistances = React.useMemo(
+    () => calculateGraphDistances(graphQueryItems, assetNode.assetKey),
+    [graphQueryItems, assetNode],
+  );
+  const maxDepth =
+    params.lineageScope === 'upstream'
+      ? maxDistances.upstream
+      : params.lineageScope === 'downstream'
+      ? maxDistances.downstream
+      : Math.max(maxDistances.upstream, maxDistances.downstream);
+
   return (
     <>
       <Box
@@ -29,7 +60,12 @@ export const AssetNodeLineage: React.FC<{
             {id: 'upstream', label: 'Upstream', icon: 'graph_upstream'},
             {id: 'downstream', label: 'Downstream', icon: 'graph_downstream'},
           ]}
-          onClick={(lineageScope) => setParams({...params, lineageScope})}
+          onClick={(lineageScope) => setParams({...params, lineageScope, lineageDepth: undefined})}
+        />
+        <LineageDepthControl
+          value={Math.max(1, Math.min(maxDepth, requestedDepth))}
+          onChange={(depth) => setParams({...params, lineageDepth: depth})}
+          max={maxDepth}
         />
         <Checkbox
           format="switch"
@@ -63,5 +99,59 @@ export const AssetNodeLineage: React.FC<{
         params={params}
       />
     </>
+  );
+};
+
+const LineageDepthControl: React.FC<{
+  value: number;
+  max: number;
+  onChange: (v: number) => void;
+}> = ({value, max, onChange}) => {
+  const commitValue = (target: HTMLInputElement) => {
+    const next = Number(target.value) ? Math.min(max, Number(target.value)) : value;
+    onChange(next);
+    target.value = `${next}`;
+  };
+
+  return (
+    <Box flex={{gap: 8, alignItems: 'center'}}>
+      <JoinedButtons>
+        <Button
+          disabled={value <= 1}
+          onClick={() => onChange(value - 1)}
+          icon={<Icon name="arrow_back" />}
+        />
+        <TextInput
+          min={1}
+          max={max}
+          disabled={max <= 1}
+          inputMode="numeric"
+          style={{
+            width: 40,
+            marginLeft: 2,
+            textAlign: 'center',
+            height: 32,
+            padding: 6,
+            borderRadius: 0,
+            boxShadow: 'none',
+            border: `1px solid ${Colors.Gray300}`,
+          }}
+          key={value}
+          defaultValue={value}
+          onKeyDown={(e) =>
+            e.key === 'Enter' || e.key === 'Return' ? commitValue(e.currentTarget) : undefined
+          }
+          onBlur={(e) => commitValue(e.target)}
+        />
+        <Button
+          disabled={value >= max}
+          onClick={() => onChange(value + 1)}
+          icon={<Icon name="arrow_forward" />}
+        />
+        <Button disabled={value >= max} onClick={() => onChange(max)}>
+          All
+        </Button>
+      </JoinedButtons>
+    </Box>
   );
 };
