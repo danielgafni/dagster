@@ -1,5 +1,6 @@
 from collections import defaultdict
-from typing import Dict, List, Mapping, cast
+from enum import Enum
+from typing import Dict, Iterable, List, Mapping, cast
 
 from graphql.execution.base import ResolveInfo
 
@@ -10,6 +11,8 @@ from dagster.core.definitions import create_run_config_schema
 from dagster.core.errors import DagsterRunNotFoundError
 from dagster.core.execution.stats import RunStepKeyStatsSnapshot, StepEventStatus
 from dagster.core.host_representation import PipelineSelector
+from dagster.core.host_representation.external_data import ExternalAssetNode
+from dagster.core.storage.event_log.base import AssetRecord
 from dagster.core.storage.pipeline_run import RunRecord, RunsFilter
 from dagster.core.storage.tags import TagType, get_tag_type
 
@@ -122,6 +125,70 @@ IN_PROGRESS_STATUSES = [
 ]
 
 
+class AssetComputeStatus(Enum):
+    OLD = "OLD"
+    GOOD = "GOOD"
+    NONE = "NONE"
+    UNKNOWN = "UNKNOWN"
+
+
+def get_all_asset_nodes(graphene_info):
+    asset_nodes_by_asset_key: Dict[AssetKey, ExternalAssetNode] = {}
+    for location in graphene_info.context.repository_locations:
+        for repository in location.get_repositories().values():
+            for external_asset_node in repository.get_external_asset_nodes():
+                preexisting_node = asset_nodes_by_asset_key.get(external_asset_node.asset_key)
+                if preexisting_node is None or preexisting_node.external_asset_node.op_name is None:
+                    asset_nodes_by_asset_key[external_asset_node.asset_key] = external_asset_node
+    return asset_nodes_by_asset_key
+
+
+def get_upstream_changed_by_asset(
+    all_asset_nodes: Dict[AssetKey, ExternalAssetNode],
+    all_asset_records: Iterable[AssetRecord],
+    requested_asset_keys: List[AssetKey],
+):
+    last_changed: Dict[AssetKey, float] = {}
+    status: Dict[AssetKey, AssetComputeStatus] = {}
+
+    # First, iterate over all the asset records and build a map of last materialization times.
+    # Some assets (eg: source or partitioned assets) are not supported and get fixed statuses.
+    for asset_record in all_asset_records:
+        asset_key = asset_record.asset_entry.asset_key
+        asset_node = all_asset_nodes.get(asset_key)
+        if not asset_node:
+            continue
+        last_changed[asset_key] = asset_record.asset_entry.last_materialization.timestamp
+        if not asset_node.op_names:
+            status[asset_key] = AssetComputeStatus.GOOD  # source assets are always "up to date"
+        elif asset_node.partitions_def_data:
+            status[asset_key] = AssetComputeStatus.NONE  # partitioned assets are not supported
+        elif last_changed[asset_key]:
+            status[asset_key] = AssetComputeStatus.UNKNOWN
+        else:
+            status[asset_key] = AssetComputeStatus.NONE  # never materialized assets cannot be stale
+
+    def fill_status_for(key: AssetKey):
+        if status.get(key) != AssetComputeStatus.UNKNOWN:
+            return status.get(key)
+        upstream = all_asset_nodes[key].dependencies
+        for dep in upstream:
+            if last_changed.get(dep.upstream_asset_key, 0) > last_changed.get(key, 0):
+                return AssetComputeStatus.OLD
+        for dep in upstream:
+            if fill_status_for(dep.upstream_asset_key) != AssetComputeStatus.GOOD:
+                return AssetComputeStatus.OLD
+        return AssetComputeStatus.GOOD
+
+    # Beginning with the set of assets for which status was requested, recurse up the
+    # dependency graphs and fill in statuses that are still "unknown". Note that for
+    # A -> B -> C, if A is newer than B, both B and C are "old".
+    final: Dict[AssetKey, str] = {}
+    for asset_key in requested_asset_keys:
+        final[asset_key] = fill_status_for(asset_key)
+    return final
+
+
 def get_assets_live_info(graphene_info, step_keys_by_asset: Mapping[AssetKey, List[str]]):
     from ..schema.asset_graph import GrapheneAssetLatestInfo
     from ..schema.logs.events import GrapheneMaterializationEvent
@@ -129,14 +196,18 @@ def get_assets_live_info(graphene_info, step_keys_by_asset: Mapping[AssetKey, Li
 
     instance = graphene_info.context.instance
 
-    # Get latest run ID for all selected assets
-    asset_records = instance.get_asset_records(step_keys_by_asset.keys())
+    asset_nodes = get_all_asset_nodes(graphene_info)
+    asset_records = instance.get_asset_records(asset_nodes.keys())
+    upstream_changed_by_asset = get_upstream_changed_by_asset(
+        asset_nodes, asset_records, step_keys_by_asset.keys()
+    )
 
     latest_materialization_by_asset = {
         asset_record.asset_entry.asset_key: GrapheneMaterializationEvent(
             event=asset_record.asset_entry.last_materialization
         )
         if asset_record.asset_entry.last_materialization
+        and asset_record.asset_entry.asset_key in step_keys_by_asset
         else None
         for asset_record in asset_records
     }
@@ -167,6 +238,7 @@ def get_assets_live_info(graphene_info, step_keys_by_asset: Mapping[AssetKey, Li
         GrapheneAssetLatestInfo(
             asset_key,
             latest_materialization_by_asset.get(asset_key),
+            (upstream_changed_by_asset.get(asset_key)),
             list(unstarted_run_ids_by_asset.get(asset_key, [])),
             list(in_progress_run_ids_by_asset.get(asset_key, [])),
             GrapheneRun(run_records_by_run_id[latest_run_ids_by_asset[asset_key]])

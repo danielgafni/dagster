@@ -76,9 +76,20 @@ class GrapheneAssetDependency(graphene.ObjectType):
         )
 
 
+class GrapheneAssetComputeStatus(graphene.Enum):
+    OLD = "OLD"
+    GOOD = "GOOD"
+    NONE = "NONE"
+    UNKNOWN = "UNKNOWN"
+
+    class Meta:
+        name = "AssetComputeStatus"
+
+
 class GrapheneAssetLatestInfo(graphene.ObjectType):
     assetKey = graphene.NonNull(GrapheneAssetKey)
     latestMaterialization = graphene.Field(GrapheneMaterializationEvent)
+    computeStatus = graphene.NonNull(GrapheneAssetComputeStatus)
     unstartedRunIds = non_null_list(graphene.String)
     inProgressRunIds = non_null_list(graphene.String)
     latestRun = graphene.Field(GrapheneRun)

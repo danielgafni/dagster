@@ -7,6 +7,13 @@
 // START Enums and Input Objects
 //==============================================================
 
+export enum AssetComputeStatus {
+  GOOD = "GOOD",
+  NONE = "NONE",
+  OLD = "OLD",
+  UNKNOWN = "UNKNOWN",
+}
+
 export enum BackfillStatus {
   CANCELED = "CANCELED",
   COMPLETED = "COMPLETED",

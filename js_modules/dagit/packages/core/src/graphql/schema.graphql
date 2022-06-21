@@ -2154,9 +2154,17 @@ type Permission {
 type AssetLatestInfo {
   assetKey: AssetKey!
   latestMaterialization: MaterializationEvent
+  computeStatus: AssetComputeStatus!
   unstartedRunIds: [String!]!
   inProgressRunIds: [String!]!
   latestRun: Run
+}
+
+enum AssetComputeStatus {
+  OLD
+  GOOD
+  NONE
+  UNKNOWN
 }
 
 union EventConnectionOrError = EventConnection | RunNotFoundError | PythonError
