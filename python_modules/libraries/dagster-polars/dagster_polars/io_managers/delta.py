@@ -160,6 +160,11 @@ class PolarsDeltaIOManager(BasePolarsUPathIOManager):
     mode: DeltaWriteMode = DeltaWriteMode.overwrite.value  # type: ignore
     overwrite_schema: bool = False
     version: Optional[int] = None
+    vacuum_every: Optional[int] = Field(default=None, description="Run VACUUM over the table every Nth version. More info: https://delta-io.github.io/delta-rs/python/usage.html#vacuuming-tables")
+    vacuum_retention_hours: Optional[int] = Field(default=None, description="The retention period in hours for vacuumed files. More info: https://delta-io.github.io/delta-rs/python/usage.html#vacuuming-tables")
+    optimize_compact_every: Optional[int] = Field(default=None, description="Run OPTIMIZE over the table every Nth version. More info: https://delta-io.github.io/delta-rs/python/usage.html#optimizing-tables")
+    optimize_z_order_every: Optional[int] = Field(default=None, description="Run OPTIMIZE ZORDER BY over the table every Nth version. More info: https://delta-io.github.io/delta-rs/python/usage.html#optimizing-tables")
+    optimize_z_order_by: Optional[List[str]] = Field(default=None, description="Columns to optimize ZORDER BY. More info: https://delta-io.github.io/delta-rs/python/usage.html#optimizing-tables")
 
     def sink_df_to_path(
         self,
@@ -212,30 +217,43 @@ class PolarsDeltaIOManager(BasePolarsUPathIOManager):
             context.log.debug(f"Writing with delta_write_options: {pformat(delta_write_options)}")
 
         storage_options = self.storage_options
-        try:
-            dt = DeltaTable(str(path), storage_options=storage_options)
-        except TableNotFoundError:
-            dt = str(path)
 
         df.write_delta(
-            dt,
+            str(path),
             mode=context_metadata.get("mode") or self.mode.value,
             overwrite_schema=context_metadata.get("overwrite_schema") or self.overwrite_schema,
             storage_options=storage_options,
             delta_write_options=delta_write_options,
         )
-        if isinstance(dt, DeltaTable):
-            current_version = dt.version()
-        else:
-            current_version = DeltaTable(
-                str(path), storage_options=storage_options, without_files=True
-            ).version()
+
+        dt = DeltaTable(
+            str(path), storage_options=storage_options, without_files=True
+        )
+        current_version = dt.version()
         context.add_output_metadata({"version": current_version})
 
         if metadata is not None:
             metadata_path = self.get_storage_metadata_path(path, current_version)
             metadata_path.parent.mkdir(parents=True, exist_ok=True)
             metadata_path.write_text(json.dumps(metadata))
+
+        vacuum_every = context_metadata.get("vacuum_every") or self.vacuum_every
+        if vacuum_every is not None and current_version % vacuum_every == 0:
+            res = dt.vacuum(dry_run=False,
+                        retention_hours=context_metadata.get("vacuum_retention_hours") or self.vacuum_retention_hours
+            )
+            context.log.info(f"Vacuumed DeltaLake table {path}:\n{res}")
+
+        optimize_compact_every = context_metadata.get("optimize_compact_every") or self.optimize_compact_every
+        if optimize_compact_every is not None and current_version % optimize_compact_every == 0:
+            res = dt.optimize.compact()
+            context.log.info(f"Compacted small files in DeltaLake table {path}:\n{res}")
+
+        optimize_z_order_every = context_metadata.get("optimize_z_order_every") or self.optimize_z_order_every
+        if optimize_z_order_every is not None and current_version % optimize_z_order_every == 0:
+            optimize_z_order_by = context_metadata.get("optimize_z_order_by") or self.optimize_z_order_by
+            res = dt.optimize.z_order(optimize_z_order_by)
+            context.log.info(f"Perfromed ZORDER BY {optimize_z_order_by} in DeltaLake table {path}:\n{res}")
 
     @overload
     def scan_df_from_path(

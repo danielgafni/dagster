@@ -118,13 +118,41 @@ def test_polars_delta_io_manager_append(polars_delta_io_manager: PolarsDeltaIOMa
 def test_polars_delta_io_manager_overwrite_schema(
     polars_delta_io_manager: PolarsDeltaIOManager, dagster_instance: DagsterInstance
 ):
-    @asset(io_manager_def=polars_delta_io_manager)
-    def overwrite_schema_asset_1() -> pl.DataFrame:
-        return pl.DataFrame(
-            {
-                "a": [1, 2, 3],
-            }
-        )
+    @asset(io_ma
+def test_polars_delta_io_manager_append(polars_delta_io_manager: PolarsDeltaIOManager):
+    df = pl.DataFrame(
+        {
+            "a": [1, 2, 3],
+        }
+    )
+
+    @asset(io_manager_def=polars_delta_io_manager, metadata={"mode": "append"})
+    def append_asset() -> pl.DataFrame:
+        return df
+
+    result = materialize(
+        [append_asset],
+    )
+
+    handled_output_events = list(
+        filter(lambda evt: evt.is_handled_output, result.events_for_node("append_asset"))
+    )
+    saved_path = handled_output_events[0].event_specific_data.metadata["path"].value  # type: ignore
+    assert handled_output_events[0].event_specific_data.metadata["row_count"].value == 3  # type: ignore
+    assert handled_output_events[0].event_specific_data.metadata["append_row_count"].value == 3  # type: ignore
+    assert isinstance(saved_path, str)
+
+    result = materialize(
+        [append_asset],
+    )
+    handled_output_events = list(
+        filter(lambda evt: evt.is_handled_output, result.events_for_node("append_asset"))
+    )
+    assert handled_output_events[0].event_specific_data.metadata["row_count"].value == 6  # type: ignore
+    assert handled_output_events[0].event_specific_data.metadata["append_row_count"].value == 3  # type: ignore
+
+    pl_testing.assert_frame_equal(pl.concat([df, df]), pl.read_delta(saved_path))
+
 
     result = materialize(
         [overwrite_schema_asset_1],
@@ -442,3 +470,26 @@ def test_polars_delta_time_travel(
             downstream_1,
         ]
     )
+
+
+def test_polars_delta_vacuum(polars_delta_io_manager: PolarsDeltaIOManager):
+    df = pl.DataFrame(
+        {
+            "a": [1, 2, 3],
+        }
+    )
+
+    @asset(io_manager_def=polars_delta_io_manager, metadata={"vacuum_every": 2})
+    def vacuumed_asset() -> pl.DataFrame:
+        return df
+
+    for i in range(3):
+        result = materialize(
+            [vacuumed_asset],
+        )
+
+    saved_path = get_saved_path(result, "upstream_partitioned")  # noqa
+
+    dt = DeltaTable(saved_path)
+
+    assert len(dt.files()) == 3
